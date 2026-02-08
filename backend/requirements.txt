@@ -1,0 +1,35 @@
+# FastAPI & Server
+fastapi==0.109.0
+uvicorn[standard]==0.27.0
+python-multipart==0.0.6
+
+# Database
+sqlalchemy==2.0.25
+asyncpg==0.29.0
+aiosqlite==0.20.0
+
+# Authentication & Security
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+# NOTE: passlib 1.7.4 is not compatible with bcrypt 4.x (removal of bcrypt.__about__).
+# Pin bcrypt to a 3.x version to avoid runtime errors.
+bcrypt==3.2.2
+
+# Validation
+pydantic==2.5.3
+pydantic-settings==2.1.0
+email-validator==2.1.0
+
+# Caching
+redis==5.0.1
+hiredis==2.3.2
+
+# Performance & Async
+httpx==0.26.0
+aiofiles==23.2.1
+
+# Utilities
+python-dotenv==1.0.0
+
+# Fast fuzzy matching (used by API search)
+rapidfuzz==3.6.2

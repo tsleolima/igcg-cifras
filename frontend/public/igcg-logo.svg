@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 560 560" role="img" aria-label="IGCG">
+  <defs>
+    <style>
+      .fg { fill: #4b4f2f; }
+      .fg2 { fill: #3f4327; }
+      .muted { fill: #5b6142; }
+      .text { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; font-weight: 800; }
+      .sub { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; font-weight: 500; letter-spacing: 0.06em; }
+    </style>
+  </defs>
+
+  <!-- White background to match the original logo feel -->
+  <rect x="0" y="0" width="560" height="560" fill="#ffffff"/>
+
+  <!-- Simplified mark inspired by provided logo -->
+  <rect x="120" y="90" width="320" height="36" rx="6" class="fg"/>
+  <rect x="150" y="140" width="260" height="28" rx="6" class="fg2" opacity="0.95"/>
+  <rect x="180" y="185" width="200" height="24" rx="6" class="fg2" opacity="0.9"/>
+
+  <rect x="190" y="235" width="22" height="160" rx="6" class="fg"/>
+  <rect x="269" y="255" width="22" height="140" rx="6" class="fg" opacity="0.9"/>
+  <rect x="348" y="235" width="22" height="160" rx="6" class="fg"/>
+
+  <text x="280" y="470" text-anchor="middle" class="text fg" font-size="112">IGCG</text>
+  <text x="280" y="520" text-anchor="middle" class="sub muted" font-size="28">IGREJA EM CAMPINA GRANDE</text>
+</svg>
