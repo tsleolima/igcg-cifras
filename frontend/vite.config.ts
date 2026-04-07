@@ -5,5 +5,12 @@ export default defineConfig({
   plugins: [react()],
   server: {
     port: 5173,
+    proxy: {
+      '/api': {
+        target: 'https://igcgcifras.minklab.cloud',
+        changeOrigin: true,
+        secure: true,
+      },
+    },
   },
 })
