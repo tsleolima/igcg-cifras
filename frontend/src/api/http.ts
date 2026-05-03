@@ -12,7 +12,7 @@ export class ApiError extends Error {
   }
 }
 
-const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL as string | undefined) || 'http://localhost:8000'
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL as string | undefined) || window.location.origin
 const API_PREFIX = '/api/v1'
 
 function buildUrl(path: string, query?: Record<string, string | number | boolean | undefined | null>): string {
