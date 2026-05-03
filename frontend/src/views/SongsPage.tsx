@@ -81,9 +81,13 @@ export function SongsPage() {
 
   return (
     <div className="card">
-      <div className="cardTitle">
-        <div className="h3">Sons</div>
-        <div className="muted" style={{ fontSize: 12 }}>Lista de músicas</div>
+      <div className="pageHeroCompact">
+        <div>
+          <div className="heroBadge">Biblioteca</div>
+          <div className="h3">Músicas</div>
+          <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>Filtre o repertório e abra cifras com mais rapidez.</div>
+        </div>
+        <Link to="/search" className="topbarPrimaryLink">Buscar cifra</Link>
       </div>
 
       <div style={{ height: 10 }} />

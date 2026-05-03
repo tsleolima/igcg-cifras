@@ -1,8 +1,43 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type { FormEvent } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useLocation } from 'react-router-dom'
 import { searchAll, searchArtists, searchPlaylists, searchSongs } from '../api/search'
+import type {
+  ArtistResponse,
+  PaginatedResponse,
+  PlaylistResponse,
+  SearchAllResponse,
+  SongHymnListResponse,
+} from '../api/types'
 import { ErrorBanner } from '../ui/Feedback'
+
+type SearchMode = 'all' | 'songs' | 'artists' | 'playlists'
+type SearchResult =
+  | SearchAllResponse
+  | PaginatedResponse<SongHymnListResponse>
+  | PaginatedResponse<ArtistResponse>
+  | PaginatedResponse<PlaylistResponse>
+
+type AllPages = {
+  songs: number
+  artists: number
+  playlists: number
+}
+
+type SearchSnapshot = {
+  q: string
+  mode: SearchMode
+  page: number
+  allPages: AllPages
+  scrollY: number
+}
+
+type SearchLocationState = {
+  searchSnapshot?: SearchSnapshot
+}
+
+const PREVIEW_PAGE_SIZE = 8
+const DETAIL_PAGE_SIZE = 12
 
 function Icon({ children }: { children: React.ReactNode }) {
   return (
@@ -71,12 +106,68 @@ function SparkIcon() {
   )
 }
 
+function PaginationControls({
+  pageData,
+  onPageChange,
+}: {
+  pageData?: PaginatedResponse<unknown> | null
+  onPageChange: (page: number) => void
+}) {
+  if (!pageData || pageData.total_pages <= 1) return null
+
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginTop: 14 }}>
+      <div className="muted" style={{ fontSize: 12 }}>
+        Página {pageData.page} de {pageData.total_pages}
+      </div>
+      <div style={{ display: 'flex', gap: 8 }}>
+        <button
+          type="button"
+          className="chip chipBtn"
+          disabled={!pageData.has_prev}
+          onClick={() => onPageChange(pageData.page - 1)}
+        >
+          Anterior
+        </button>
+        <button
+          type="button"
+          className="chip chipBtn"
+          disabled={!pageData.has_next}
+          onClick={() => onPageChange(pageData.page + 1)}
+        >
+          Próxima
+        </button>
+      </div>
+    </div>
+  )
+}
+
+function ResultCounter({ pageData }: { pageData?: PaginatedResponse<unknown> | null }) {
+  if (!pageData) return null
+
+  if (!pageData.total) {
+    return <span className="muted" style={{ fontSize: 12 }}>0 resultado(s)</span>
+  }
+
+  const start = (pageData.page - 1) * pageData.page_size + 1
+  const end = Math.min(pageData.page * pageData.page_size, pageData.total)
+
+  return (
+    <span className="muted" style={{ fontSize: 12 }}>
+      Mostrando {start}-{end} de {pageData.total}
+    </span>
+  )
+}
+
 export function SearchPage() {
+  const location = useLocation()
   const [q, setQ] = useState('')
-  const [mode, setMode] = useState<'all' | 'songs' | 'artists' | 'playlists'>('all')
+  const [mode, setMode] = useState<SearchMode>('all')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [result, setResult] = useState<any>(null)
+  const [result, setResult] = useState<SearchResult | null>(null)
+  const [page, setPage] = useState(1)
+  const [allPages, setAllPages] = useState<AllPages>({ songs: 1, artists: 1, playlists: 1 })
 
   const placeholder = useMemo(() => {
     if (mode === 'songs') return 'Digite o título ou um trecho da letra…'
@@ -85,7 +176,19 @@ export function SearchPage() {
     return 'Digite o título, trecho, artista ou playlist…'
   }, [mode])
 
-  async function runSearch(nextQ: string, nextMode: typeof mode) {
+  function restoreScrollPosition(scrollY: number) {
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        window.scrollTo({ top: scrollY, behavior: 'auto' })
+      })
+    })
+  }
+
+  async function runSearch(
+    nextQ: string,
+    nextMode: SearchMode,
+    options?: { page?: number; allPages?: AllPages; restoreScrollY?: number },
+  ) {
     setError(null)
     setLoading(true)
     try {
@@ -93,10 +196,43 @@ export function SearchPage() {
         setResult(null)
         return
       }
-      if (nextMode === 'all') setResult(await searchAll({ q: nextQ, limit_per_type: 5, fuzzy_songs: true }))
-      if (nextMode === 'songs') setResult(await searchSongs({ q: nextQ, limit: 30, fuzzy: true, min_score: 72 }))
-      if (nextMode === 'artists') setResult(await searchArtists({ q: nextQ, limit: 30 }))
-      if (nextMode === 'playlists') setResult(await searchPlaylists({ q: nextQ, limit: 30 }))
+      if (nextMode === 'all') {
+        const nextAllPages = options?.allPages || allPages
+        const response = await searchAll({
+          q: nextQ,
+          songs_page: nextAllPages.songs,
+          artists_page: nextAllPages.artists,
+          playlists_page: nextAllPages.playlists,
+          page_size: PREVIEW_PAGE_SIZE,
+          fuzzy_songs: true,
+        })
+        setResult(response)
+        if (typeof options?.restoreScrollY === 'number') restoreScrollPosition(options.restoreScrollY)
+      }
+      if (nextMode === 'songs') {
+        const nextPage = options?.page || page
+        const response = await searchSongs({
+          q: nextQ,
+          page: nextPage,
+          page_size: DETAIL_PAGE_SIZE,
+          fuzzy: true,
+          min_score: 72,
+        })
+        setResult(response)
+        if (typeof options?.restoreScrollY === 'number') restoreScrollPosition(options.restoreScrollY)
+      }
+      if (nextMode === 'artists') {
+        const nextPage = options?.page || page
+        const response = await searchArtists({ q: nextQ, page: nextPage, page_size: DETAIL_PAGE_SIZE })
+        setResult(response)
+        if (typeof options?.restoreScrollY === 'number') restoreScrollPosition(options.restoreScrollY)
+      }
+      if (nextMode === 'playlists') {
+        const nextPage = options?.page || page
+        const response = await searchPlaylists({ q: nextQ, page: nextPage, page_size: DETAIL_PAGE_SIZE })
+        setResult(response)
+        if (typeof options?.restoreScrollY === 'number') restoreScrollPosition(options.restoreScrollY)
+      }
     } catch (e: any) {
       setError(e?.message || 'Falha na busca')
     } finally {
@@ -106,10 +242,53 @@ export function SearchPage() {
 
   async function onSubmit(e: FormEvent) {
     e.preventDefault()
-    await runSearch(q, mode)
+    if (mode === 'all') {
+      const resetPages = { songs: 1, artists: 1, playlists: 1 }
+      setAllPages(resetPages)
+      await runSearch(q, mode, { allPages: resetPages })
+      return
+    }
+
+    setPage(1)
+    await runSearch(q, mode, { page: 1 })
   }
 
   const hasQuery = Boolean(q.trim())
+
+  useEffect(() => {
+    const snapshot = (location.state as SearchLocationState | null)?.searchSnapshot
+    if (!snapshot?.q.trim()) return
+
+    setQ(snapshot.q)
+    setMode(snapshot.mode)
+    setPage(snapshot.page)
+    setAllPages(snapshot.allPages)
+
+    if (snapshot.mode === 'all') {
+      void runSearch(snapshot.q, snapshot.mode, {
+        allPages: snapshot.allPages,
+        restoreScrollY: snapshot.scrollY,
+      })
+      return
+    }
+
+    void runSearch(snapshot.q, snapshot.mode, {
+      page: snapshot.page,
+      restoreScrollY: snapshot.scrollY,
+    })
+  }, [location.key])
+
+  function createSongLinkState(): SearchLocationState {
+    return {
+      searchSnapshot: {
+        q,
+        mode,
+        page,
+        allPages,
+        scrollY: window.scrollY,
+      },
+    }
+  }
 
   function ModeButton(props: {
     value: typeof mode
@@ -121,10 +300,7 @@ export function SearchPage() {
       <button
         type="button"
         className={active ? 'chip chipBtn isActive' : 'chip chipBtn'}
-        onClick={() => {
-          setMode(props.value)
-          if (hasQuery) void runSearch(q, props.value)
-        }}
+        onClick={() => handleModeChange(props.value)}
       >
         {props.icon}
         {props.label}
@@ -132,20 +308,59 @@ export function SearchPage() {
     )
   }
 
-  const songs = mode === 'songs' ? (result as any as Array<any>) : (result?.songs as Array<any> | undefined)
-  const artists = mode === 'artists' ? (result as any as Array<any>) : (result?.artists as Array<any> | undefined)
-  const playlists = mode === 'playlists' ? (result as any as Array<any>) : (result?.playlists as Array<any> | undefined)
+  const allResult = mode === 'all' ? (result as SearchAllResponse | null) : null
+  const songPage = mode === 'songs'
+    ? (result as PaginatedResponse<SongHymnListResponse> | null)
+    : allResult?.songs
+  const artistPage = mode === 'artists'
+    ? (result as PaginatedResponse<ArtistResponse> | null)
+    : allResult?.artists
+  const playlistPage = mode === 'playlists'
+    ? (result as PaginatedResponse<PlaylistResponse> | null)
+    : allResult?.playlists
+
+  const songs = songPage?.items || []
+  const artists = artistPage?.items || []
+  const playlists = playlistPage?.items || []
+
+  function handleModeChange(nextMode: SearchMode) {
+    setMode(nextMode)
+    setError(null)
+
+    if (!hasQuery) return
+
+    if (nextMode === 'all') {
+      const resetPages = { songs: 1, artists: 1, playlists: 1 }
+      setAllPages(resetPages)
+      void runSearch(q, nextMode, { allPages: resetPages })
+      return
+    }
+
+    setPage(1)
+    void runSearch(q, nextMode, { page: 1 })
+  }
+
+  function jumpToAllSection(nextMode: Exclude<SearchMode, 'all'>) {
+    setMode(nextMode)
+    setPage(1)
+    void runSearch(q, nextMode, { page: 1 })
+  }
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-      <div className="card">
+    <div className="searchPageShell" style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+      <div className="card searchHeroCard">
         <div className="searchCardHeader">
           <div className="searchTitle">
             <SparkIcon />
             <div>
               <div className="h3">Busca</div>
-              <div className="muted" style={{ fontSize: 12 }}>Encontre músicas, artistas e playlists.</div>
+              <div className="muted" style={{ fontSize: 12 }}>Encontre músicas, artistas e playlists com uma busca mais inteligente.</div>
             </div>
+          </div>
+          <div className="searchHeroStats chips">
+            <span className="chip">Modo: <b>{mode}</b></span>
+            <span className="chip">Busca por letra</span>
+            <span className="chip accent">Resultados paginados</span>
           </div>
         </div>
 
@@ -168,6 +383,8 @@ export function SearchPage() {
                   className="searchClearBtn"
                   onClick={() => {
                     setQ('')
+                    setPage(1)
+                    setAllPages({ songs: 1, artists: 1, playlists: 1 })
                     setResult(null)
                     setError(null)
                   }}
@@ -197,7 +414,7 @@ export function SearchPage() {
         <div style={{ height: 12 }} />
         {error ? <ErrorBanner message={error} /> : null}
         {!loading && !result && !hasQuery ? (
-          <div className="muted" style={{ fontSize: 13 }}>
+          <div className="muted searchHint" style={{ fontSize: 13 }}>
             Exemplos: “Teu Grande Amor”, “Grande é o Senhor”.
           </div>
         ) : null}
@@ -207,18 +424,25 @@ export function SearchPage() {
       {!loading && result ? (
         <>
           {mode === 'all' || mode === 'songs' ? (
-            <div className="card">
+            <div className="card searchResultsCard">
               <div className="searchSectionTitle">
                 <div className="h3" style={{ fontSize: 16 }}>Músicas</div>
-                <span className="muted" style={{ fontSize: 12 }}>{(songs || []).length} resultado(s)</span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <ResultCounter pageData={songPage} />
+                  {mode === 'all' && songPage && songPage.total > songPage.items.length ? (
+                    <button type="button" className="chip chipBtn" onClick={() => jumpToAllSection('songs')}>
+                      Ver todos
+                    </button>
+                  ) : null}
+                </div>
               </div>
               <div style={{ height: 10 }} />
-              {(songs || []).length ? (
-                <div className="list">
-                  {(songs || []).map((s: any) => (
-                    <div key={s.id} className="listItem">
+              {songs.length ? (
+                <div className="list featureList">
+                  {songs.map((s) => (
+                    <div key={s.id} className="listItem featureItem searchEntityItem">
                       <div className="listMain">
-                        <Link className="listTitle" to={`/songs/${s.id}`}>{s.title}</Link>
+                        <Link className="listTitle" to={`/songs/${s.id}`} state={createSongLinkState()}>{s.title}</Link>
                         <div className="listSub muted">{s.artist_name || `artist_id=${s.artist_id}`}</div>
                       </div>
                       <div className="listRight">
@@ -230,20 +454,41 @@ export function SearchPage() {
               ) : (
                 <div className="muted">Nenhuma música encontrada.</div>
               )}
+              <PaginationControls
+                pageData={songPage}
+                onPageChange={(nextPage) => {
+                  if (mode === 'all') {
+                    const nextAllPages = { ...allPages, songs: nextPage }
+                    setAllPages(nextAllPages)
+                    void runSearch(q, 'all', { allPages: nextAllPages })
+                    return
+                  }
+
+                  setPage(nextPage)
+                  void runSearch(q, 'songs', { page: nextPage })
+                }}
+              />
             </div>
           ) : null}
 
           {mode === 'all' || mode === 'artists' ? (
-            <div className="card">
+            <div className="card searchResultsCard">
               <div className="searchSectionTitle">
                 <div className="h3" style={{ fontSize: 16 }}>Artistas</div>
-                <span className="muted" style={{ fontSize: 12 }}>{(artists || []).length} resultado(s)</span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <ResultCounter pageData={artistPage} />
+                  {mode === 'all' && artistPage && artistPage.total > artistPage.items.length ? (
+                    <button type="button" className="chip chipBtn" onClick={() => jumpToAllSection('artists')}>
+                      Ver todos
+                    </button>
+                  ) : null}
+                </div>
               </div>
               <div style={{ height: 10 }} />
-              {(artists || []).length ? (
-                <div className="list">
-                  {(artists || []).map((a: any) => (
-                    <div key={a.id} className="listItem">
+              {artists.length ? (
+                <div className="list featureList">
+                  {artists.map((a) => (
+                    <div key={a.id} className="listItem featureItem searchEntityItem">
                       <div className="listMain">
                         <Link className="listTitle" to={`/artists/${a.id}`}>{a.name}</Link>
                         <div className="listSub muted">Artista</div>
@@ -254,20 +499,41 @@ export function SearchPage() {
               ) : (
                 <div className="muted">Nenhum artista encontrado.</div>
               )}
+              <PaginationControls
+                pageData={artistPage}
+                onPageChange={(nextPage) => {
+                  if (mode === 'all') {
+                    const nextAllPages = { ...allPages, artists: nextPage }
+                    setAllPages(nextAllPages)
+                    void runSearch(q, 'all', { allPages: nextAllPages })
+                    return
+                  }
+
+                  setPage(nextPage)
+                  void runSearch(q, 'artists', { page: nextPage })
+                }}
+              />
             </div>
           ) : null}
 
           {mode === 'all' || mode === 'playlists' ? (
-            <div className="card">
+            <div className="card searchResultsCard">
               <div className="searchSectionTitle">
                 <div className="h3" style={{ fontSize: 16 }}>Playlists</div>
-                <span className="muted" style={{ fontSize: 12 }}>{(playlists || []).length} resultado(s)</span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <ResultCounter pageData={playlistPage} />
+                  {mode === 'all' && playlistPage && playlistPage.total > playlistPage.items.length ? (
+                    <button type="button" className="chip chipBtn" onClick={() => jumpToAllSection('playlists')}>
+                      Ver todos
+                    </button>
+                  ) : null}
+                </div>
               </div>
               <div style={{ height: 10 }} />
-              {(playlists || []).length ? (
-                <div className="list">
-                  {(playlists || []).map((p: any) => (
-                    <div key={p.id} className="listItem">
+              {playlists.length ? (
+                <div className="list featureList">
+                  {playlists.map((p) => (
+                    <div key={p.id} className="listItem featureItem searchEntityItem">
                       <div className="listMain">
                         <Link className="listTitle" to={`/playlists/${p.id}`}>{p.name}</Link>
                         <div className="listSub muted">{p.song_count} música(s)</div>
@@ -278,6 +544,20 @@ export function SearchPage() {
               ) : (
                 <div className="muted">Nenhuma playlist encontrada.</div>
               )}
+              <PaginationControls
+                pageData={playlistPage}
+                onPageChange={(nextPage) => {
+                  if (mode === 'all') {
+                    const nextAllPages = { ...allPages, playlists: nextPage }
+                    setAllPages(nextAllPages)
+                    void runSearch(q, 'all', { allPages: nextAllPages })
+                    return
+                  }
+
+                  setPage(nextPage)
+                  void runSearch(q, 'playlists', { page: nextPage })
+                }}
+              />
             </div>
           ) : null}
         </>

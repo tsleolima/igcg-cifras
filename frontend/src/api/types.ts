@@ -74,3 +74,19 @@ export type SongInPlaylist = {
 export type PlaylistDetailResponse = PlaylistResponse & {
   songs: SongInPlaylist[]
 }
+
+export type PaginatedResponse<T> = {
+  items: T[]
+  page: number
+  page_size: number
+  total: number
+  total_pages: number
+  has_next: boolean
+  has_prev: boolean
+}
+
+export type SearchAllResponse = {
+  songs: PaginatedResponse<SongHymnListResponse>
+  artists: PaginatedResponse<ArtistResponse>
+  playlists: PaginatedResponse<PlaylistResponse>
+}

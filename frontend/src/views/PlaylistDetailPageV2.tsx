@@ -67,7 +67,7 @@ export function PlaylistDetailPageV2() {
         setSongSearching(true)
         try {
           const res = await searchSongs({ q, limit: 12, fuzzy: true })
-          setSongResults(res)
+          setSongResults(res.items || [])
         } catch {
           setSongResults([])
         } finally {

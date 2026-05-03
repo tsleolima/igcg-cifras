@@ -56,6 +56,16 @@ function ArrowLeftIcon() {
 
 function rtrim(s: string) { return s.replace(/[ \t]+$/g, '') }
 
+function slugifyFilenamePart(value: string) {
+  const normalized = value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-zA-Z0-9\s_-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+  return normalized.replace(/\s+/g, '_').toLowerCase()
+}
+
 const NOTES_SHARP = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'] as const
 const NOTES_FLAT = ['C', 'Db', 'D', 'Eb', 'E', 'F', 'Gb', 'G', 'Ab', 'A', 'Bb', 'B'] as const
 
@@ -386,6 +396,54 @@ export function SongDetailPageV2() {
     catch (e: any) { setActionError(e?.message || 'Falha ao buscar letra') }
   }
 
+  async function onDownloadPlainLyricsTxt() {
+    if (!state.data) return
+
+    setActionError(null)
+    setActionSuccess(null)
+
+    try {
+      const res = await getLyrics(id, { include_chords: false })
+      const plainLyrics = (res.lyrics || '').trim()
+
+      if (!plainLyrics) {
+        setActionError('Letra sem cifras indisponível para download')
+        return
+      }
+
+      const title = state.data.title || res.title || `hino_${id}`
+      const artist = state.data.artist_name || res.artist || ''
+      const album = res.album || ''
+
+      const content = [
+        title,
+        artist ? `Artista: ${artist}` : null,
+        album ? `Álbum: ${album}` : null,
+        '',
+        plainLyrics,
+      ]
+        .filter((line): line is string => line !== null)
+        .join('\n')
+
+      const safeBase = slugifyFilenamePart(title) || `hino_${id}`
+      const fileName = `${safeBase}_letra.txt`
+      const blob = new Blob([content], { type: 'text/plain;charset=utf-8' })
+      const url = window.URL.createObjectURL(blob)
+
+      const link = document.createElement('a')
+      link.href = url
+      link.download = fileName
+      document.body.appendChild(link)
+      link.click()
+      document.body.removeChild(link)
+      window.URL.revokeObjectURL(url)
+
+      setActionSuccess('Download da letra sem cifras iniciado')
+    } catch (e: any) {
+      setActionError(e?.message || 'Falha ao gerar download da letra')
+    }
+  }
+
   /* ── Render ─────────────────────────────────────── */
   return (
     <div style={{ paddingBottom: playerMode ? 110 : 0 }}>
@@ -511,7 +569,16 @@ export function SongDetailPageV2() {
           <div style={{ background: 'var(--bg-card)', border: '1px solid var(--border-light)', borderRadius: 'var(--radius-lg)', padding: 24, boxShadow: 'var(--shadow-sm)' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
               <h2 style={{ fontSize: 17, fontWeight: 700, margin: 0, color: 'var(--text)' }}>Letra + Cifras</h2>
-              {!playerMode && <button className="v2-btn v2-btn-sm v2-btn-outline" onClick={() => void onReloadLyrics()}>Atualizar</button>}
+              {!playerMode && (
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                  <button className="v2-btn v2-btn-sm v2-btn-primary" onClick={() => void onDownloadPlainLyricsTxt()}>
+                    Baixar letra .txt
+                  </button>
+                  <button className="v2-btn v2-btn-sm v2-btn-outline" onClick={() => void onReloadLyrics()}>
+                    Atualizar
+                  </button>
+                </div>
+              )}
             </div>
 
             {state.data.introduction && (

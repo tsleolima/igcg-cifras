@@ -7,6 +7,24 @@ import type { PlaylistResponse } from '../api/types'
 import { useAsync } from '../ui/hooks'
 import { ErrorBanner, SuccessBanner } from '../ui/Feedback'
 
+type SearchMode = 'all' | 'songs' | 'artists' | 'playlists'
+
+type SearchSnapshot = {
+  q: string
+  mode: SearchMode
+  page: number
+  allPages: {
+    songs: number
+    artists: number
+    playlists: number
+  }
+  scrollY: number
+}
+
+type SongDetailLocationState = {
+  searchSnapshot?: SearchSnapshot
+}
+
 function Icon({ children }: { children: React.ReactNode }) {
   return (
     <svg className="songActionIcon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -95,6 +113,16 @@ function ChevronRightIcon() {
 
 function rtrim(s: string) {
   return s.replace(/[ \t]+$/g, '')
+}
+
+function slugifyFilenamePart(value: string) {
+  const normalized = value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-zA-Z0-9\s_-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+  return normalized.replace(/\s+/g, '_').toLowerCase()
 }
 
 const NOTES_SHARP = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'] as const
@@ -264,6 +292,7 @@ export function SongDetailPage() {
 
   const [wrapCols, setWrapCols] = useState<number | null>(null)
   const [measureEl, setMeasureEl] = useState<HTMLDivElement | null>(null)
+  const searchSnapshot = (location.state as SongDetailLocationState | null)?.searchSnapshot
 
   const playlistId = useMemo(() => {
     const sp = new URLSearchParams(location.search)
@@ -407,12 +436,7 @@ export function SongDetailPage() {
     if (!measureEl) return
     const el = measureEl
 
-    const mql = window.matchMedia?.('(max-width: 899px)')
-    const isMobile = () => (mql ? mql.matches : window.innerWidth <= 899)
-
     function computeColsFromElement(el: HTMLDivElement): number | null {
-      if (!isMobile()) return null
-
       const style = window.getComputedStyle(el)
       const pl = Number.parseFloat(style.paddingLeft || '0') || 0
       const pr = Number.parseFloat(style.paddingRight || '0') || 0
@@ -436,7 +460,7 @@ export function SongDetailPage() {
 
       // Keep a small safety margin so we don't overflow.
       const cols = Math.floor(available / charW) - 1
-      return Math.max(18, Math.min(cols, 80))
+      return Math.max(18, Math.min(cols, 140))
     }
 
     function update() {
@@ -452,17 +476,6 @@ export function SongDetailPage() {
     }
 
     window.addEventListener('resize', update)
-    if (mql) {
-      const onChange = () => update()
-      if ('addEventListener' in mql) {
-        mql.addEventListener('change', onChange)
-        return () => {
-          window.removeEventListener('resize', update)
-          ro?.disconnect()
-          mql.removeEventListener('change', onChange)
-        }
-      }
-    }
 
     return () => {
       window.removeEventListener('resize', update)
@@ -593,11 +606,63 @@ export function SongDetailPage() {
     }
   }
 
+  async function onDownloadPlainLyricsTxt() {
+    if (!state.data) return
+
+    setActionError(null)
+    setActionSuccess(null)
+
+    try {
+      const res = await getLyrics(id, { include_chords: false })
+      const plainLyrics = (res.lyrics || '').trim()
+
+      if (!plainLyrics) {
+        setActionError('Letra sem acordes indisponível para download')
+        return
+      }
+
+      const title = state.data.title || res.title || `hino_${id}`
+      const artist = state.data.artist_name || res.artist || ''
+      const album = res.album || ''
+
+      const content = [
+        title,
+        artist ? `Artista: ${artist}` : null,
+        album ? `Álbum: ${album}` : null,
+        '',
+        plainLyrics,
+      ]
+        .filter((line) => line !== null)
+        .join('\n')
+
+      const safeBase = slugifyFilenamePart(title) || `hino_${id}`
+      const fileName = `${safeBase}_letra.txt`
+      const blob = new Blob([content], { type: 'text/plain;charset=utf-8' })
+      const url = window.URL.createObjectURL(blob)
+
+      const link = document.createElement('a')
+      link.href = url
+      link.download = fileName
+      document.body.appendChild(link)
+      link.click()
+      document.body.removeChild(link)
+      window.URL.revokeObjectURL(url)
+
+      setActionSuccess('Download da letra sem acordes iniciado')
+    } catch (e: any) {
+      setActionError(e?.message || 'Falha ao gerar download da letra')
+    }
+  }
+
   return (
     <div className={playerMode ? 'songDetail playerMode' : 'songDetail'}>
       {!playerMode ? (
-        <div className="muted" style={{ marginBottom: 10 }}>
-          <Link to="/songs">← Voltar</Link>
+        <div className="muted songBackLink" style={{ marginBottom: 10 }}>
+          {searchSnapshot ? (
+            <Link to="/search" state={{ searchSnapshot }}>← Voltar para busca</Link>
+          ) : (
+            <Link to="/songs">← Voltar</Link>
+          )}
         </div>
       ) : null}
 
@@ -611,11 +676,12 @@ export function SongDetailPage() {
         <>
           {!playerMode ? (
             <>
-              <div className="card">
+              <div className="card songHeroCard">
                 <div className="cardTitle">
-                  <div>
+                  <div className="songHeroMain">
+                    <div className="heroBadge">Detalhe do hino</div>
                     <div className="h3">{state.data.title}</div>
-                    <div className="muted" style={{ fontSize: 13 }}>
+                    <div className="muted songHeroSub" style={{ fontSize: 13 }}>
                       {state.data.artist_name || `artist_id=${state.data.artist_id}`}
                     </div>
                   </div>
@@ -656,7 +722,7 @@ export function SongDetailPage() {
 
                 <div style={{ height: 12 }} />
 
-                <div className="chips">
+                <div className="chips songMetaChips">
                   <span className="chip accent">Plays: {state.data.play_count}</span>
                   {state.data.original_key ? <span className="chip">Tom: {state.data.original_key}</span> : null}
                   {state.data.rhythm ? <span className="chip">Ritmo: {state.data.rhythm}</span> : null}
@@ -741,10 +807,20 @@ export function SongDetailPage() {
             </>
           ) : null}
 
-          <div className="card">
+          <div className="card lyricsCard">
             <div className="cardTitle">
-              <div className="h3">Letra + Cifras</div>
-              {!playerMode ? <button className="primary" onClick={() => void onReloadLyrics()}>Atualizar</button> : null}
+              <div>
+                <div className="heroBadge">Modo cifra</div>
+                <div className="h3">Letra + Cifras</div>
+              </div>
+              {!playerMode ? (
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                  <button className="primary" onClick={() => void onDownloadPlainLyricsTxt()}>
+                    Baixar letra .txt
+                  </button>
+                  <button className="primary" onClick={() => void onReloadLyrics()}>Atualizar</button>
+                </div>
+              ) : null}
             </div>
             <div style={{ height: 10 }} />
             {state.data.introduction ? (

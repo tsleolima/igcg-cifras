@@ -13,6 +13,7 @@ from app.models.user_favorite import UserFavorite
 from app.schemas.song import SongCreate, SongUpdate, SongHymnListResponse, SongHymnDetailResponse
 from app.core.security import get_current_user, get_current_active_superuser
 from app.core.constants import CHURCH_ARTIST_ID
+from app.utils.text import sanitize_song_lyrics, sanitize_song_lyrics_with_chords
 
 router = APIRouter()
 
@@ -185,6 +186,8 @@ async def create_song(
     # Force artist_id to be the church
     song_dict = song_data.model_dump()
     song_dict["artist_id"] = CHURCH_ARTIST_ID
+    song_dict["lyrics_with_chords"] = sanitize_song_lyrics_with_chords(song_dict.get("lyrics_with_chords"))
+    song_dict["lyrics"] = sanitize_song_lyrics(song_dict.get("lyrics") or song_dict.get("lyrics_with_chords"))
 
     # Verify album exists if provided
     if song_data.album_id:
@@ -234,6 +237,17 @@ async def update_song(
         )
 
     update_data = song_update.model_dump(exclude_unset=True)
+
+    if "lyrics" in update_data or "lyrics_with_chords" in update_data:
+        if "lyrics_with_chords" in update_data:
+            update_data["lyrics_with_chords"] = sanitize_song_lyrics_with_chords(update_data.get("lyrics_with_chords"))
+
+        lyrics_source = update_data.get("lyrics")
+        if lyrics_source is None and "lyrics_with_chords" in update_data:
+            lyrics_source = update_data.get("lyrics_with_chords")
+        if lyrics_source is None:
+            lyrics_source = song.lyrics_with_chords or song.lyrics
+        update_data["lyrics"] = sanitize_song_lyrics(lyrics_source)
 
     for field, value in update_data.items():
         setattr(song, field, value)

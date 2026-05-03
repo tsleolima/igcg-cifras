@@ -41,7 +41,7 @@ export function PlaylistDetailPage() {
         setSongSearching(true)
         try {
           const res = await searchSongs({ q, limit: 12, fuzzy: true })
-          setSongResults(res)
+          setSongResults(res.items)
         } catch {
           setSongResults([])
         } finally {
@@ -176,9 +176,12 @@ export function PlaylistDetailPage() {
 
   return (
     <div className="card">
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
-        <div className="muted">
+      <div className="pageHeroCompact playlistHeroHeader" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
+        <div>
+          <div className="muted">
           <Link to="/playlists">← Voltar</Link>
+          </div>
+          <div className="heroBadge" style={{ marginTop: 8 }}>Playlist</div>
         </div>
         <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
           <Link to={`/playlists/${id}/edit`}>
@@ -196,14 +199,18 @@ export function PlaylistDetailPage() {
         <div className="muted">Carregando…</div>
       ) : (
         <>
-          <h3 style={{ marginTop: 10 }}>{state.data.name}</h3>
-          <div className="muted">
-            owner: {state.data.owner_username} • pública: {state.data.is_public ? 'sim' : 'não'} • songs: {state.data.song_count}
+          <div className="playlistHeroBody">
+            <h3 style={{ marginTop: 10, marginBottom: 8 }}>{state.data.name}</h3>
+            <div className="chips">
+              <span className="chip">owner: {state.data.owner_username}</span>
+              <span className="chip">pública: {state.data.is_public ? 'sim' : 'não'}</span>
+              <span className="chip accent">songs: {state.data.song_count}</span>
+            </div>
           </div>
           {state.data.description ? <pre>{state.data.description}</pre> : null}
 
           <div style={{ height: 12 }} />
-          <div className="card">
+          <div className="card playlistSectionCard">
             <h4 style={{ marginTop: 0 }}>Adicionar música</h4>
             <div className="row">
               <div>

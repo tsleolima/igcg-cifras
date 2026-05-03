@@ -1,156 +1,177 @@
-from fastapi import APIRouter, Depends, Query
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, or_, func
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import joinedload
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.session import get_db
-from app.models.user import User
-from app.models.song import Song
 from app.models.artist import Artist
 from app.models.playlist import Playlist
-from app.schemas.song import SongHymnListResponse
+from app.models.song import Song
+from app.models.user import User
 from app.schemas.artist import ArtistResponse
 from app.schemas.playlist import PlaylistResponse
+from app.schemas.search import (
+    PaginatedArtistSearchResponse,
+    PaginatedPlaylistSearchResponse,
+    PaginatedSongSearchResponse,
+    SearchAllResponse,
+)
+from app.schemas.song import SongHymnListResponse
 from app.core.security import get_current_user
-from app.utils.song_search import get_song_search_index
-from app.utils.text import normalize_text
+from app.utils.song_search import get_song_search_index, rank_song_search_ids
 
 router = APIRouter()
 
 
-@router.get("/songs", response_model=list[SongHymnListResponse])
-async def search_songs(
-    q: str = Query(..., min_length=1, description="Search query"),
-    limit: int = Query(20, ge=1, le=100),
-    fuzzy: bool = Query(True, description="Use fuzzy matching (RapidFuzz)"),
-    min_score: int = Query(72, ge=0, le=100, description="Minimum fuzzy score to include"),
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    """Search songs by title or artist name"""
-    q_norm = normalize_text(q)
+def _build_paginated_response(*, items: list, page: int, page_size: int, total: int) -> dict:
+    total_pages = (total + page_size - 1) // page_size if total else 0
+    return {
+        "items": items,
+        "page": page,
+        "page_size": page_size,
+        "total": total,
+        "total_pages": total_pages,
+        "has_next": page < total_pages,
+        "has_prev": page > 1 and total_pages > 0,
+    }
 
-    songs: list[Song] = []
 
-    if fuzzy:
-        try:
-            from rapidfuzz import fuzz, process
-        except Exception:
-            fuzzy = False
+def _slice_ids(ids: list[int], page: int, page_size: int) -> list[int]:
+    start = (page - 1) * page_size
+    end = start + page_size
+    return ids[start:end]
 
-    if fuzzy and q_norm:
-        index = await get_song_search_index(db)
 
-        # Unique choice strings avoid collisions when multiple rows share the same normalized title.
-        choices: list[str] = []
-        choice_to_id: dict[str, int] = {}
-
-        for item in index:
-            song_id = int(item["id"])
-            for key in ("combo_norm", "artist_title_norm", "title_norm"):
-                value = item.get(key) or ""
-                if not value:
-                    continue
-                choice = f"{value}:::{song_id}"
-                choices.append(choice)
-                choice_to_id[choice] = song_id
-
-        # Grab more than `limit` and then de-dupe by song id.
-        extracted = process.extract(q_norm, choices, scorer=fuzz.WRatio, limit=min(800, max(50, limit * 20)))
-
-        ranked_ids: list[int] = []
-        seen: set[int] = set()
-        for choice, score, _ in extracted:
-            if score is None or float(score) < float(min_score):
-                continue
-            song_id = choice_to_id.get(choice)
-            if song_id is None or song_id in seen:
-                continue
-            seen.add(song_id)
-            ranked_ids.append(song_id)
-            if len(ranked_ids) >= limit:
-                break
-
-        if ranked_ids:
-            songs_result = await db.execute(
-                select(Song)
-                .where(Song.id.in_(ranked_ids))
-                .options(joinedload(Song.artist), joinedload(Song.album))
-            )
-            by_id = {s.id: s for s in songs_result.scalars().unique().all()}
-            songs = [by_id[sid] for sid in ranked_ids if sid in by_id]
-
-    if not songs:
-        # Fallback: basic SQL LIKE search (fast and dependency-free)
-        search_term = f"%{q.lower()}%"
-        query = (
-            select(Song)
-            .join(Artist, Song.artist_id == Artist.id)
-            .where(
-                or_(
-                    func.lower(Song.title).like(search_term),
-                    func.lower(Artist.name).like(search_term),
-                    func.lower(Song.genre).like(search_term),
-                )
-            )
-            .options(joinedload(Song.artist), joinedload(Song.album))
-            .limit(limit)
-            .order_by(Song.play_count.desc())
-        )
-
-        result = await db.execute(query)
-        songs = result.scalars().unique().all()
-
-    # Get user favorites
+async def _get_favorite_song_ids(db: AsyncSession, user_id: int) -> set[int]:
     from app.models.user_favorite import UserFavorite
 
     fav_result = await db.execute(
-        select(UserFavorite.song_id).where(UserFavorite.user_id == current_user.id)
+        select(UserFavorite.song_id).where(UserFavorite.user_id == user_id)
     )
-    favorite_song_ids = {row[0] for row in fav_result.all()}
+    return {row[0] for row in fav_result.all()}
 
-    songs_response = []
+
+def _serialize_songs(songs: list[Song], favorite_song_ids: set[int]) -> list[SongHymnListResponse]:
+    songs_response: list[SongHymnListResponse] = []
     for song in songs:
         song_dict = SongHymnListResponse.model_validate(song).model_dump()
         song_dict["artist_name"] = song.artist.name if song.artist else None
         song_dict["is_favorited"] = song.id in favorite_song_ids
         songs_response.append(SongHymnListResponse(**song_dict))
-
     return songs_response
 
 
-@router.get("/artists", response_model=list[ArtistResponse])
+async def _fetch_ranked_songs_page(
+    db: AsyncSession,
+    *,
+    ranked_ids: list[int],
+    page: int,
+    page_size: int,
+) -> list[Song]:
+    page_ids = _slice_ids(ranked_ids, page, page_size)
+    if not page_ids:
+        return []
+
+    songs_result = await db.execute(
+        select(Song)
+        .where(Song.id.in_(page_ids))
+        .options(joinedload(Song.artist), joinedload(Song.album))
+    )
+    songs_by_id = {song.id: song for song in songs_result.scalars().unique().all()}
+    return [songs_by_id[song_id] for song_id in page_ids if song_id in songs_by_id]
+
+
+@router.get("/songs", response_model=PaginatedSongSearchResponse)
+async def search_songs(
+    q: str = Query(..., min_length=1, description="Search query"),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    limit: int | None = Query(None, ge=1, le=100, deprecated=True),
+    fuzzy: bool = Query(True, description="Use fuzzy matching (RapidFuzz)"),
+    min_score: int = Query(72, ge=0, le=100, description="Minimum fuzzy score to include"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Search songs by title, artist, album, genre and hymn lyrics."""
+    effective_page_size = limit or page_size
+    index = await get_song_search_index(db)
+    ranked_ids = rank_song_search_ids(index, q, fuzzy=fuzzy, min_score=min_score)
+    songs = await _fetch_ranked_songs_page(
+        db,
+        ranked_ids=ranked_ids,
+        page=page,
+        page_size=effective_page_size,
+    )
+    favorite_song_ids = await _get_favorite_song_ids(db, current_user.id)
+
+    return _build_paginated_response(
+        items=_serialize_songs(songs, favorite_song_ids),
+        page=page,
+        page_size=effective_page_size,
+        total=len(ranked_ids),
+    )
+
+
+@router.get("/artists", response_model=PaginatedArtistSearchResponse)
 async def search_artists(
     q: str = Query(..., min_length=1, description="Search query"),
-    limit: int = Query(20, ge=1, le=100),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    limit: int | None = Query(None, ge=1, le=100, deprecated=True),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Search artists by name"""
     search_term = f"%{q.lower()}%"
+    effective_page_size = limit or page_size
+
+    total_result = await db.execute(
+        select(func.count(Artist.id)).where(func.lower(Artist.name).like(search_term))
+    )
+    total = int(total_result.scalar() or 0)
 
     query = (
         select(Artist)
         .where(func.lower(Artist.name).like(search_term))
-        .limit(limit)
         .order_by(Artist.name)
+        .offset((page - 1) * effective_page_size)
+        .limit(effective_page_size)
     )
 
     result = await db.execute(query)
     artists = result.scalars().all()
 
-    return [ArtistResponse.model_validate(artist) for artist in artists]
+    return _build_paginated_response(
+        items=[ArtistResponse.model_validate(artist) for artist in artists],
+        page=page,
+        page_size=effective_page_size,
+        total=total,
+    )
 
 
-@router.get("/playlists", response_model=list[PlaylistResponse])
+@router.get("/playlists", response_model=PaginatedPlaylistSearchResponse)
 async def search_playlists(
     q: str = Query(..., min_length=1, description="Search query"),
-    limit: int = Query(20, ge=1, le=100),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    limit: int | None = Query(None, ge=1, le=100, deprecated=True),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Search public playlists and user's own playlists by name"""
     search_term = f"%{q.lower()}%"
+    effective_page_size = limit or page_size
+
+    total_result = await db.execute(
+        select(func.count(Playlist.id)).where(
+            or_(
+                Playlist.is_public == True,
+                Playlist.owner_id == current_user.id,
+            ),
+            func.lower(Playlist.name).like(search_term),
+        )
+    )
+    total = int(total_result.scalar() or 0)
 
     query = (
         select(Playlist)
@@ -162,8 +183,9 @@ async def search_playlists(
             func.lower(Playlist.name).like(search_term),
         )
         .options(joinedload(Playlist.owner))
-        .limit(limit)
         .order_by(Playlist.created_at.desc())
+        .offset((page - 1) * effective_page_size)
+        .limit(effective_page_size)
     )
 
     result = await db.execute(query)
@@ -186,102 +208,66 @@ async def search_playlists(
         playlist_dict["owner_username"] = playlist.owner.username
         playlist_responses.append(PlaylistResponse(**playlist_dict))
 
-    return playlist_responses
+    return _build_paginated_response(
+        items=playlist_responses,
+        page=page,
+        page_size=effective_page_size,
+        total=total,
+    )
 
 
-@router.get("/all")
+@router.get("/all", response_model=SearchAllResponse)
 async def search_all(
     q: str = Query(..., min_length=1, description="Search query"),
-    limit_per_type: int = Query(5, ge=1, le=20),
+    songs_page: int = Query(1, ge=1),
+    artists_page: int = Query(1, ge=1),
+    playlists_page: int = Query(1, ge=1),
+    page_size: int = Query(8, ge=1, le=50),
+    limit_per_type: int | None = Query(None, ge=1, le=50, deprecated=True),
     fuzzy_songs: bool = Query(True, description="Use fuzzy matching for songs"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Search across all types (songs, artists, playlists)"""
     search_term = f"%{q.lower()}%"
+    effective_page_size = limit_per_type or page_size
 
-    # For songs, prefer fuzzy (RapidFuzz) and fall back to SQL LIKE.
-    songs: list[Song] = []
-    if fuzzy_songs:
-        q_norm = normalize_text(q)
-        if q_norm:
-            try:
-                from rapidfuzz import fuzz, process
+    index = await get_song_search_index(db)
+    ranked_song_ids = rank_song_search_ids(index, q, fuzzy=fuzzy_songs, min_score=72)
+    songs = await _fetch_ranked_songs_page(
+        db,
+        ranked_ids=ranked_song_ids,
+        page=songs_page,
+        page_size=effective_page_size,
+    )
 
-                index = await get_song_search_index(db)
-                choices: list[str] = []
-                choice_to_id: dict[str, int] = {}
-                for item in index:
-                    song_id = int(item["id"])
-                    for key in ("combo_norm", "artist_title_norm", "title_norm"):
-                        value = item.get(key) or ""
-                        if not value:
-                            continue
-                        choice = f"{value}:::{song_id}"
-                        choices.append(choice)
-                        choice_to_id[choice] = song_id
+    artists_total_result = await db.execute(
+        select(func.count(Artist.id)).where(func.lower(Artist.name).like(search_term))
+    )
+    artists_total = int(artists_total_result.scalar() or 0)
 
-                extracted = process.extract(
-                    q_norm,
-                    choices,
-                    scorer=fuzz.WRatio,
-                    limit=min(400, max(50, limit_per_type * 30)),
-                )
-
-                ranked_ids: list[int] = []
-                seen: set[int] = set()
-                for choice, score, _ in extracted:
-                    if score is None or float(score) < 72:
-                        continue
-                    song_id = choice_to_id.get(choice)
-                    if song_id is None or song_id in seen:
-                        continue
-                    seen.add(song_id)
-                    ranked_ids.append(song_id)
-                    if len(ranked_ids) >= limit_per_type:
-                        break
-
-                if ranked_ids:
-                    songs_result = await db.execute(
-                        select(Song)
-                        .where(Song.id.in_(ranked_ids))
-                        .options(joinedload(Song.artist), joinedload(Song.album))
-                    )
-                    by_id = {s.id: s for s in songs_result.scalars().unique().all()}
-                    songs = [by_id[sid] for sid in ranked_ids if sid in by_id]
-            except Exception:
-                songs = []
-
-    if not songs:
-        songs_query = (
-            select(Song)
-            .join(Artist, Song.artist_id == Artist.id)
-            .where(
-                or_(
-                    func.lower(Song.title).like(search_term),
-                    func.lower(Artist.name).like(search_term),
-                )
-            )
-            .options(joinedload(Song.artist), joinedload(Song.album))
-            .limit(limit_per_type)
-            .order_by(Song.play_count.desc())
-        )
-
-        songs_result = await db.execute(songs_query)
-        songs = songs_result.scalars().unique().all()
-
-    # Search artists
     artists_query = (
         select(Artist)
         .where(func.lower(Artist.name).like(search_term))
-        .limit(limit_per_type)
         .order_by(Artist.name)
+        .offset((artists_page - 1) * effective_page_size)
+        .limit(effective_page_size)
     )
 
     artists_result = await db.execute(artists_query)
     artists = artists_result.scalars().all()
 
-    # Search playlists
+    playlists_total_result = await db.execute(
+        select(func.count(Playlist.id)).where(
+            or_(
+                Playlist.is_public == True,
+                Playlist.owner_id == current_user.id,
+            ),
+            func.lower(Playlist.name).like(search_term),
+        )
+    )
+    playlists_total = int(playlists_total_result.scalar() or 0)
+
     playlists_query = (
         select(Playlist)
         .where(
@@ -292,28 +278,17 @@ async def search_all(
             func.lower(Playlist.name).like(search_term),
         )
         .options(joinedload(Playlist.owner))
-        .limit(limit_per_type)
         .order_by(Playlist.created_at.desc())
+        .offset((playlists_page - 1) * effective_page_size)
+        .limit(effective_page_size)
     )
 
     playlists_result = await db.execute(playlists_query)
     playlists = playlists_result.scalars().unique().all()
 
-    # Format responses
-    from app.models.user_favorite import UserFavorite
     from app.models.playlist_song import PlaylistSong
 
-    fav_result = await db.execute(
-        select(UserFavorite.song_id).where(UserFavorite.user_id == current_user.id)
-    )
-    favorite_song_ids = {row[0] for row in fav_result.all()}
-
-    songs_response = []
-    for song in songs:
-        song_dict = SongHymnListResponse.model_validate(song).model_dump()
-        song_dict["artist_name"] = song.artist.name if song.artist else None
-        song_dict["is_favorited"] = song.id in favorite_song_ids
-        songs_response.append(song_dict)
+    favorite_song_ids = await _get_favorite_song_ids(db, current_user.id)
 
     playlist_responses = []
     for playlist in playlists:
@@ -330,7 +305,22 @@ async def search_all(
         playlist_responses.append(playlist_dict)
 
     return {
-        "songs": songs_response,
-        "artists": [ArtistResponse.model_validate(a).model_dump() for a in artists],
-        "playlists": playlist_responses,
+        "songs": _build_paginated_response(
+            items=_serialize_songs(songs, favorite_song_ids),
+            page=songs_page,
+            page_size=effective_page_size,
+            total=len(ranked_song_ids),
+        ),
+        "artists": _build_paginated_response(
+            items=[ArtistResponse.model_validate(a) for a in artists],
+            page=artists_page,
+            page_size=effective_page_size,
+            total=artists_total,
+        ),
+        "playlists": _build_paginated_response(
+            items=playlist_responses,
+            page=playlists_page,
+            page_size=effective_page_size,
+            total=playlists_total,
+        ),
     }

@@ -26,6 +26,7 @@ from app.models.artist import Artist
 from app.models.album import Album
 from app.models.song import Song
 from app.core.constants import CHURCH_ARTIST_ID
+from app.utils.text import sanitize_song_lyrics, sanitize_song_lyrics_with_chords
 
 
 def extract_album_and_song_title(full_title: str) -> tuple[str, str]:
@@ -144,6 +145,8 @@ async def import_songs(json_path: str = "db.json", batch_size: int = 100):
                     language = item.get("language", None)  # Read from JSON
                     lyrics = item.get("lyrics", None)
                     lyrics_with_chords = item.get("lyrics_with_chords", None)
+                    lyrics_with_chords = sanitize_song_lyrics_with_chords(lyrics_with_chords)
+                    clean_lyrics = sanitize_song_lyrics(lyrics or lyrics_with_chords)
 
                     file_data = item.get("file", {})
                     audio_url = file_data.get("url", "")
@@ -181,7 +184,7 @@ async def import_songs(json_path: str = "db.json", batch_size: int = 100):
                         duration=duration,
                         audio_url=audio_url,
                         cover_url=thumbnail,
-                        lyrics=lyrics,  # From JSON or None
+                        lyrics=clean_lyrics,
                         lyrics_with_chords=lyrics_with_chords,  # From JSON or None
                         language=language,
                         genre="Gospel",  # Default genre
